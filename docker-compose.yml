@@ -1,56 +1,109 @@
 version: '3.8'
+
 services:
   prometheus:
     image: prom/prometheus:latest
-    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+    ports: 
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"  # Bind only to localhost for security
     volumes: 
-      - "./prometheus.yml:/etc/prometheus/prometheus.yml"
+      - "./prometheus.yml:/etc/prometheus/prometheus.yml:ro"
       - "prometheus_data:/prometheus"
     command: 
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=30d'
       - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
     restart: unless-stopped
     networks: [monitoring]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   grafana:
     image: grafana/grafana:latest
-    ports: ["${GRAFANA_PORT:-3000}:3000"]
+    ports: 
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"  # Bind only to localhost
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=strict
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
     volumes:
       - "grafana_data:/var/lib/grafana"
-      - "./grafana/provisioning:/etc/grafana/provisioning"
-      - "./grafana/dashboards:/var/lib/grafana/dashboards"
-    depends_on: [prometheus]
+      - "./grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "./grafana/dashboards:/var/lib/grafana/dashboards:ro"
+    depends_on: 
+      prometheus:
+        condition: service_healthy
     restart: unless-stopped
     networks: [monitoring]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   node-exporter:
     image: prom/node-exporter:latest
-    ports: ["${NODE_EXPORTER_PORT:-9100}:9100"]
+    ports: 
+      - "127.0.0.1:${NODE_EXPORTER_PORT:-9100}:9100"
     restart: unless-stopped
     networks: [monitoring]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    pid: host
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
-    ports: ["${CADVISOR_PORT:-8080}:8080"]
-    volumes: ["/:/rootfs:ro", "/var/run:/var/run:ro", "/sys:/sys:ro", "/var/lib/docker/:/var/lib/docker:ro"]
+    ports: 
+      - "127.0.0.1:${CADVISOR_PORT:-8080}:8080"
+    volumes: 
+      - "/:/rootfs:ro"
+      - "/var/run:/var/run:ro"
+      - "/sys:/sys:ro"
+      - "/var/lib/docker/:/var/lib/docker:ro"
+      - "/dev/disk/:/dev/disk:ro"
     restart: unless-stopped
     networks: [monitoring]
+    privileged: true
+    devices:
+      - "/dev/kmsg"
 
   blackbox-exporter:
     image: prom/blackbox-exporter:latest
-    ports: ["${BLACKBOX_PORT:-9115}:9115"]
-    volumes: ["./blackbox.yml:/etc/blackbox_exporter/config.yml"]
+    ports: 
+      - "127.0.0.1:${BLACKBOX_PORT:-9115}:9115"
+    volumes: 
+      - "./blackbox.yml:/etc/blackbox_exporter/config.yml:ro"
     restart: unless-stopped
     networks: [monitoring]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9115/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   prometheus_data:
+    driver: local
   grafana_data:
+    driver: local
 
 networks:
   monitoring:
