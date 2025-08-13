@@ -1,4 +1,4 @@
-
+#!/bin/bash
 set -e
 
 echo "Starting Production Deployment..."
@@ -40,6 +40,12 @@ if ! command -v docker-compose &> /dev/null; then
     exit 1
 fi
 
+# Check if envsubst is available
+if ! command -v envsubst &> /dev/null; then
+    print_error "envsubst not found. Install with: sudo apt-get install gettext-base"
+    exit 1
+fi
+
 print_status "Checking prerequisites..."
 
 # Check for .env file
@@ -49,7 +55,7 @@ if [ ! -f ".env" ]; then
     
     if [ -f "env.example" ]; then
         cp env.example .env
-        print_warning " Please edit .env file with your actual values before continuing!"
+        print_warning "Please edit .env file with your actual values before continuing!"
         print_status "Required variables to update:"
         echo "  - GRAFANA_PASSWORD: Set a strong password"
         echo "  - WEBSITE_SERVER_IP: Your website server IP address"
@@ -85,6 +91,25 @@ fi
 
 print_status "Environment variables validated!"
 
+# Template configuration files with environment variables
+print_status "Templating configuration files with environment variables..."
+
+# Template prometheus.yml
+if [ -f "prometheus.yml.template" ]; then
+    envsubst < prometheus.yml.template > prometheus.yml
+    print_status "Templated prometheus.yml with environment variables"
+else
+    print_error "prometheus.yml.template not found!"
+    exit 1
+fi
+
+# Validate templated config
+if grep -q '${' prometheus.yml; then
+    print_error "Some environment variables not substituted in prometheus.yml"
+    print_error "Check that all required variables are set in .env"
+    exit 1
+fi
+
 # Create necessary directories
 print_status "Creating directories..."
 mkdir -p grafana/provisioning/datasources
@@ -97,15 +122,12 @@ if [ ! -f "docker-compose.yml" ]; then
     exit 1
 fi
 
-if [ ! -f "prometheus.yml" ]; then
-    print_error "prometheus.yml not found!"
+if [ ! -f "blackbox.yml" ]; then
+    print_error "blackbox.yml not found!"
     exit 1
 fi
 
 print_status "Configuration files found!"
-
-# Copy production configs (no longer needed since we have single files)
-print_status "Setting up configuration..."
 
 # Check if Grafana provisioning files exist
 if [ ! -f "grafana/provisioning/datasources/prometheus.yml" ]; then
@@ -148,9 +170,19 @@ fi
 # Set proper permissions
 print_status "Setting file permissions..."
 chmod 644 prometheus.yml
+chmod 644 blackbox.yml
 chmod 644 grafana/provisioning/datasources/prometheus.yml
 chmod 644 grafana/provisioning/dashboards/dashboard.yml
 chmod 600 .env
+
+# Test website metrics endpoint
+print_status "Testing website metrics endpoint..."
+if curl -s --connect-timeout 10 --max-time 10 "http://${WEBSITE_SERVER_IP}:9464/metrics" | grep -q "http_server_duration"; then
+    print_status "Website metrics endpoint is working!"
+else
+    print_warning "Website metrics endpoint test failed. Monitoring will still deploy but may not show website data."
+    print_warning "Please ensure your website is serving metrics at http://${WEBSITE_SERVER_IP}:9464/metrics"
+fi
 
 # Stop any existing containers
 print_status "Stopping existing containers..."
@@ -192,9 +224,12 @@ fi
 print_status "Deployment completed!"
 
 echo
-echo "Monitoring Stack URLs:"
-echo "  Grafana Dashboard: http://${MONITORING_SERVER_IP:-localhost}:${GRAFANA_PORT:-3000} (admin/${GRAFANA_PASSWORD})"
-echo "  Prometheus: http://${MONITORING_SERVER_IP:-localhost}:${PROMETHEUS_PORT:-9090}"
+echo "Monitoring Stack Information:"
+echo "  Grafana: http://localhost:${GRAFANA_PORT:-3000} (admin/${GRAFANA_PASSWORD})"
+echo "  Prometheus: http://localhost:${PROMETHEUS_PORT:-9090}"
+echo "  Node Exporter: http://localhost:${NODE_EXPORTER_PORT:-9100}"
+echo "  cAdvisor: http://localhost:${CADVISOR_PORT:-8080}"
+echo "  Blackbox Exporter: http://localhost:${BLACKBOX_PORT:-9115}"
 echo
 
 print_status "Configuration Summary:"
@@ -204,9 +239,18 @@ echo "  Grafana Port: ${GRAFANA_PORT:-3000}"
 echo "  Prometheus Port: ${PROMETHEUS_PORT:-9090}"
 echo
 
-print_status "To view logs: docker-compose --env-file .env logs -f"
-print_status "To stop services: docker-compose --env-file .env down"
-print_status "To restart services: docker-compose --env-file .env restart"
+print_status "Reverse Proxy Configuration Needed:"
+echo "  Target: http://localhost:${GRAFANA_PORT:-3000}"
+echo "  Domain: monitoring.${WEBSITE_DOMAIN}"
+echo "  SSL: Required"
+echo
+
+print_status "Useful Commands:"
+echo "  View logs: docker-compose --env-file .env logs -f"
+echo "  Stop services: docker-compose --env-file .env down"
+echo "  Restart services: docker-compose --env-file .env restart"
+echo "  Update images: docker-compose --env-file .env pull && docker-compose --env-file .env up -d"
 
 echo
-print_status "Production deployment script completed!"
+print_status "Production deployment completed successfully!"
+print_status "Please configure reverse proxy to point monitoring.${WEBSITE_DOMAIN} to localhost:${GRAFANA_PORT:-3000}"
